@@ -53,8 +53,8 @@
     <button id="toggle">Settings</button>
   </div>
   <div class="rows">
-    <label class="row">Strength  <input id="strength" type="range" min="0" max="1" step="0.01" value="0.85"><output></output></label>
-    <label class="row">Sharpness <input id="sharp"    type="range" min="0.5" max="8" step="0.1" value="3"><output></output></label>
+    <label class="row">Strength  <input id="strength" type="range" min="0" max="1.5" step="0.01" value="1"><output></output></label>
+    <label class="row">Sharpness <input id="sharp"    type="range" min="0.5" max="14" step="0.1" value="7"><output></output></label>
     <label class="row">Inclination<input id="incl"     type="range" min="0" max="90" step="1" value="67"><output></output></label>
     <label class="row">Smoothing <input id="smooth"   type="range" min="0.03" max="0.5" step="0.01" value="0.15"><output></output></label>
     <label class="row">Cam FOV    <input id="fov"      type="range" min="40" max="90" step="1" value="62"><output></output></label>
@@ -100,9 +100,11 @@
     if (uMode > .5) {
       col = vec3(pat * uStrength + (1.-uStrength)*.5);           // grayscale-only pathway
     } else {
-      float k = .22 + 1.25*pat;                                   // dark where the field axis is in view
-      vec3 filtered = cam * k + vec3(pat*pat*.18);                // slight glow in the bright band
-      col = mix(cam, filtered, uStrength);
+      float k = .03 + 1.9*pat;                                    // very dark where the field axis is in view
+      float lum = dot(cam, vec3(.299,.587,.114));
+      vec3 base = mix(cam, vec3(lum), .45);                       // slightly desaturate so the pattern reads
+      vec3 filtered = base * k + vec3(pat*pat*pat*.35);           // glow in the bright band
+      col = clamp(mix(cam, filtered, uStrength), 0., 1.);
     }
     gl_FragColor = vec4(col, 1.);
   }`;
@@ -192,8 +194,11 @@
       addEventListener('deviceorientation', onOrientation, true);
     } else {
       // Android Chrome: absolute orientation (referenced to magnetic north)
-      if ('ondeviceorientationabsolute' in window) addEventListener('deviceorientationabsolute', onOrientation, true);
-      else addEventListener('deviceorientation', onOrientation, true);
+      if ('ondeviceorientationabsolute' in window) {
+        addEventListener('deviceorientationabsolute', onOrientation, true);
+        // If the absolute event never fires, fall back to the regular one
+        setTimeout(() => { if (!haveSensor) addEventListener('deviceorientation', onOrientation, true); }, 1500);
+      } else addEventListener('deviceorientation', onOrientation, true);
     }
   }
 
@@ -259,7 +264,8 @@
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     const { az, el } = azElOf(current);
-    $('readout').textContent = `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°`;
+    $('readout').textContent = `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°  ·  ` +
+      (haveSensor ? 'sensor live' : 'NO SENSOR (drag to look)');
   }
 
   /* ---------- Start ---------- */
