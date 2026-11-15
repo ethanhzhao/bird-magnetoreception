@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Bird Vision — Magnetoreception</title>
+<style>
+  :root { --fg:#fff; --bg:rgba(10,12,18,.62); }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:#000; color:var(--fg);
+    font:14px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; overflow:hidden; touch-action:none; }
+  video { position:fixed; inset:0; width:1px; height:1px; opacity:0; pointer-events:none; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #start { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; padding:32px; text-align:center; background:#0b0e14; z-index:10; }
+  #start h1 { margin:0; font-size:26px; font-weight:600; letter-spacing:.01em; }
+  #start p { margin:0; max-width:30em; opacity:.75; }
+  button { font:inherit; color:var(--fg); background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.3);
+    border-radius:999px; padding:12px 22px; cursor:pointer; }
+  button:active { background:rgba(255,255,255,.28); }
+  #hud { position:fixed; top:max(14px, env(safe-area-inset-top)); left:0; right:0; display:flex; justify-content:center; pointer-events:none; z-index:5; }
+  #hud span { background:var(--bg); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    padding:6px 14px; border-radius:999px; font-variant-numeric:tabular-nums; letter-spacing:.04em; }
+  #panel { position:fixed; left:12px; right:12px; bottom:max(12px, env(safe-area-inset-bottom)); z-index:5;
+    background:var(--bg); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border-radius:18px; padding:12px 16px; }
+  #panel.collapsed .rows { display:none; }
+  #panel .top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  #panel .top button { padding:6px 14px; }
+  .rows { margin-top:10px; display:grid; gap:8px; }
+  .row { display:grid; grid-template-columns:96px 1fr 44px; align-items:center; gap:8px; }
+  .row output { text-align:right; opacity:.7; font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; }
+  #err { color:#ffb4a8; max-width:30em; }
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted autoplay></video>
+<canvas id="gl"></canvas>
+
+<div id="start">
+  <h1>Bird Vision</h1>
+  <p>See the world with a simulated magnetic compass sense. The pattern you see depends on the direction you face — and where you tilt your phone.</p>
+  <button id="go">Enable camera &amp; motion</button>
+  <p id="err"></p>
+</div>
+
+<div id="hud" hidden><span id="readout">N 0°</span></div>
+
+<div id="panel" class="collapsed" hidden>
+  <div class="top">
+    <button id="mode">View: blended</button>
+    <button id="toggle">Settings</button>
+  </div>
+  <div class="rows">
+    <label class="row">Strength  <input id="strength" type="range" min="0" max="1" step="0.01" value="0.85"><output></output></label>
+    <label class="row">Sharpness <input id="sharp"    type="range" min="0.5" max="8" step="0.1" value="3"><output></output></label>
+    <label class="row">Inclination<input id="incl"     type="range" min="0" max="90" step="1" value="67"><output></output></label>
+    <label class="row">Smoothing <input id="smooth"   type="range" min="0.03" max="0.5" step="0.01" value="0.15"><output></output></label>
+    <label class="row">Cam FOV    <input id="fov"      type="range" min="40" max="90" step="1" value="62"><output></output></label>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const video = $('cam'), canvas = $('gl');
+  const D2R = Math.PI / 180;
+
+  /* ---------- WebGL setup ---------- */
+  const gl = canvas.getContext('webgl', { antialias:false, alpha:false });
+  const vs = `attribute vec2 p; varying vec2 vUv; void main(){ vUv = p*.5+.5; gl_Position = vec4(p,0.,1.); }`;
+  const fs = `
+  precision highp float;
+  varying vec2 vUv;
+  uniform sampler2D uVideo;
+  uniform mat3  uR;        // columns = device axes expressed in world (ENU: x east, y north, z up)
+  uniform vec3  uAxis;     // magnetic field axis in world
+  uniform vec2  uTan;      // tan(half fov) horizontal, vertical
+  uniform vec2  uUvScale;  // cover-fit for the video
+  uniform float uMode;     // 0 blended, 1 pattern only
+  uniform float uStrength;
+  uniform float uSharp;
+
+  void main(){
+    // Direction of this pixel's line of sight in world space
+    vec2 ndc = vUv*2.-1.;
+    vec3 dev = vec3(ndc.x*uTan.x, ndc.y*uTan.y, -1.);
+    vec3 ray = normalize(uR * dev);
+
+    // Angle between line of sight and the field axis (an axis, not an arrow: sign doesn't matter)
+    float c = dot(ray, uAxis);
+    float s2 = 1. - c*c;                 // sin^2(theta): 1 when looking perpendicular to the field
+    float pat = pow(clamp(s2,0.,1.), uSharp);
+
+    vec2 uv = (vUv-.5)*uUvScale + .5;
+    vec3 cam = texture2D(uVideo, uv).rgb;
+
+    vec3 col;
+    if (uMode > .5) {
+      col = vec3(pat * uStrength + (1.-uStrength)*.5);           // grayscale-only pathway
+    } else {
+      float k = .22 + 1.25*pat;                                   // dark where the field axis is in view
+      vec3 filtered = cam * k + vec3(pat*pat*.18);                // slight glow in the bright band
+      col = mix(cam, filtered, uStrength);
+    }
+    gl_FragColor = vec4(col, 1.);
+  }`;
+  function sh(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const U = n => gl.getUniformLocation(prog, n);
+  const u = { video:U('uVideo'), R:U('uR'), axis:U('uAxis'), tan:U('uTan'), scale:U('uUvScale'),
+              mode:U('uMode'), strength:U('uStrength'), sharp:U('uSharp') };
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, 1, 1, 0, gl.RGB, gl.UNSIGNED_BYTE, new Uint8Array([20,20,28]));
+  gl.uniform1i(u.video, 0);
+
+  function resize(){
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  addEventListener('resize', resize); resize();
+
+  /* ---------- Quaternion helpers (x,y,z,w) ---------- */
+  const qmul = (a,b) => [
+    a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
+    a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],
+    a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
+    a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];
+  const qAxis = (ax, ang) => { const s = Math.sin(ang/2); return [ax[0]*s, ax[1]*s, ax[2]*s, Math.cos(ang/2)]; };
+  // W3C DeviceOrientation: R = Rz(alpha) * Rx(beta) * Ry(gamma)
+  const qFromEuler = (a,b,g) => qmul(qmul(qAxis([0,0,1], a*D2R), qAxis([1,0,0], b*D2R)), qAxis([0,1,0], g*D2R));
+  const qSlerp = (a,b,t) => {
+    let d = a[0]*b[0]+a[1]*b[1]+a[2]*b[2]+a[3]*b[3];
+    if (d < 0) { b = b.map(v=>-v); d = -d; }
+    if (d > .9995) { const r = a.map((v,i)=>v+(b[i]-v)*t); const l = Math.hypot(...r); return r.map(v=>v/l); }
+    const th = Math.acos(d), s = Math.sin(th), w1 = Math.sin((1-t)*th)/s, w2 = Math.sin(t*th)/s;
+    return a.map((v,i)=>v*w1+b[i]*w2);
+  };
+  // column-major mat3 (columns = rotated x, y, z axes)
+  const qToMat3 = ([x,y,z,w]) => new Float32Array([
+    1-2*(y*y+z*z), 2*(x*y+z*w),   2*(x*z-y*w),
+    2*(x*y-z*w),   1-2*(x*x+z*z), 2*(y*z+x*w),
+    2*(x*z+y*w),   2*(y*z-x*w),   1-2*(x*x+y*y)]);
+
+  /* ---------- Orientation sources ---------- */
+  let target = qFromEuler(0, 90, 0);   // facing north, upright
+  let current = target.slice();
+  let haveSensor = false;
+  let yawOffset = 0, haveOffset = false;       // iOS: relative alpha -> compass-referenced alpha
+  let drag = { yaw:0, pitch:0 };               // desktop fallback
+
+  function azElOf(q){
+    const m = qToMat3(q);                      // forward = -(device z axis)
+    const fx = -m[6], fy = -m[7], fz = -m[8];
+    return { az: (Math.atan2(fx, fy)/D2R + 360) % 360, el: Math.asin(Math.max(-1, Math.min(1, fz)))/D2R };
+  }
+
+  function onOrientation(e){
+    if (e.alpha == null || e.beta == null || e.gamma == null) return;
+    haveSensor = true;
+    let alpha = e.alpha;
+    if (typeof e.webkitCompassHeading === 'number') {
+      // iOS: alpha is relative to an arbitrary start. Calibrate it against the compass.
+      const rel = azElOf(qFromEuler(alpha, e.beta, e.gamma));
+      if (Math.abs(rel.el) < 55) {            // azimuth is unstable when looking steeply up/down
+        const want = (rel.az - e.webkitCompassHeading + 360) % 360;   // c such that alpha_abs = alpha + c
+        if (!haveOffset) { yawOffset = want; haveOffset = true; }
+        else { let d = ((want - yawOffset + 540) % 360) - 180; yawOffset = (yawOffset + d*0.1 + 360) % 360; }
+      }
+      alpha = alpha + yawOffset;
+    }
+    target = qFromEuler(alpha, e.beta, e.gamma);
+  }
+
+  async function enableMotion(){
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const r = await DeviceOrientationEvent.requestPermission();      // iOS: must be inside a tap handler
+      if (r !== 'granted') throw new Error('Motion permission denied');
+      addEventListener('deviceorientation', onOrientation, true);
+    } else {
+      // Android Chrome: absolute orientation (referenced to magnetic north)
+      if ('ondeviceorientationabsolute' in window) addEventListener('deviceorientationabsolute', onOrientation, true);
+      else addEventListener('deviceorientation', onOrientation, true);
+    }
+  }
+
+  // Desktop / no-sensor fallback: drag to look around
+  let dragging = false, lx = 0, ly = 0;
+  canvas.addEventListener('pointerdown', e => { dragging = true; lx = e.clientX; ly = e.clientY; });
+  addEventListener('pointerup', () => dragging = false);
+  addEventListener('pointermove', e => {
+    if (!dragging || haveSensor) return;
+    drag.yaw = (drag.yaw + (e.clientX-lx)*0.3 + 360) % 360;
+    drag.pitch = Math.max(-85, Math.min(85, drag.pitch - (e.clientY-ly)*0.3));
+    lx = e.clientX; ly = e.clientY;
+    target = qFromEuler(-drag.yaw, 90 + drag.pitch, 0);
+  });
+
+  /* ---------- Controls ---------- */
+  const ctl = { strength:$('strength'), sharp:$('sharp'), incl:$('incl'), smooth:$('smooth'), fov:$('fov') };
+  const fmt = { strength:v=>(+v).toFixed(2), sharp:v=>(+v).toFixed(1), incl:v=>v+'°', smooth:v=>(+v).toFixed(2), fov:v=>v+'°' };
+  Object.entries(ctl).forEach(([k, el]) => {
+    const out = el.parentElement.querySelector('output');
+    const upd = () => out.textContent = fmt[k](el.value);
+    el.addEventListener('input', upd); upd();
+  });
+  let mode = 0;
+  $('mode').onclick = () => { mode = 1 - mode; $('mode').textContent = 'View: ' + (mode ? 'pattern only' : 'blended'); };
+  $('toggle').onclick = () => $('panel').classList.toggle('collapsed');
+
+  /* ---------- Camera ---------- */
+  async function enableCamera(){
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1280 }, height:{ ideal:720 } }, audio:false });
+    video.srcObject = stream; await video.play();
+  }
+
+  /* ---------- Render loop ---------- */
+  const names = ['N','NE','E','SE','S','SW','W','NW'];
+  function frame(){
+    requestAnimationFrame(frame);
+    // Smooth toward the sensor orientation so direction changes glide
+    current = qSlerp(current, target, +ctl.smooth.value);
+    const R = qToMat3(current);
+
+    const inc = +ctl.incl.value * D2R;
+    // Field points north and DOWN in the northern hemisphere (ENU: x east, y north, z up)
+    const axis = [0, Math.cos(inc), -Math.sin(inc)];
+
+    const cw = canvas.width, ch = canvas.height;
+    const tanV = Math.tan(+ctl.fov.value * D2R / 2), tanH = tanV * (cw/ch);
+
+    if (video.readyState >= 2) {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+      const va = video.videoWidth / video.videoHeight, ca = cw/ch;
+      gl.uniform2f(u.scale, va > ca ? ca/va : 1, va > ca ? 1 : va/ca);
+    } else gl.uniform2f(u.scale, 1, 1);
+
+    gl.uniformMatrix3fv(u.R, false, R);
+    gl.uniform3f(u.axis, axis[0], axis[1], axis[2]);
+    gl.uniform2f(u.tan, tanH, tanV);
+    gl.uniform1f(u.mode, mode);
+    gl.uniform1f(u.strength, +ctl.strength.value);
+    gl.uniform1f(u.sharp, +ctl.sharp.value);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    const { az, el } = azElOf(current);
+    $('readout').textContent = `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°`;
+  }
+
+  /* ---------- Start ---------- */
+  $('go').onclick = async () => {
+    $('err').textContent = '';
+    try {
+      await enableMotion().catch(e => { console.warn(e); });   // fall back to drag if sensors unavailable
+      await enableCamera();
+      $('start').hidden = true; $('hud').hidden = false; $('panel').hidden = false;
+      frame();
+    } catch (e) {
+      $('err').textContent = 'Could not start: ' + e.message + '. This page must be served over HTTPS and opened in a mobile browser.';
+    }
+  };
+})();
+</script>
+</body>
+</html>
