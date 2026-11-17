@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<title>Bird Vision — Magnetoreception</title>
+<title>Experience Bird Magnetoreception</title>
 <style>
   :root { --fg:#fff; --bg:rgba(10,12,18,.62); }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -23,7 +23,8 @@
   #hud span { background:var(--bg); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
     padding:6px 14px; border-radius:999px; font-variant-numeric:tabular-nums; letter-spacing:.04em; }
   #panel { position:fixed; left:12px; right:12px; bottom:max(12px, env(safe-area-inset-bottom)); z-index:5;
-    background:var(--bg); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border-radius:18px; padding:12px 16px; }
+    background:var(--bg); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border-radius:18px; padding:12px 16px;
+    max-width:560px; margin:0 auto; max-height:70vh; overflow:auto; }
   #panel.collapsed .rows { display:none; }
   #panel .top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
   #panel .top button { padding:6px 14px; }
@@ -41,6 +42,7 @@
 <div id="start">
   <h1>Experience Bird Magnetoreception</h1>
   <p>See the world with a simulated magnetic compass sense. The pattern you see depends on the direction you face — and where you tilt your phone.</p>
+  <p>Best held sideways (landscape). Turn off your phone's rotation lock first.</p>
   <button id="go">Enable camera &amp; motion</button>
   <p id="err"></p>
 </div>
@@ -76,7 +78,8 @@
   uniform sampler2D uVideo;
   uniform mat3  uR;        // columns = device axes expressed in world (ENU: x east, y north, z up)
   uniform vec3  uAxis;     // magnetic field axis in world
-  uniform vec2  uTan;      // tan(half fov) horizontal, vertical
+  uniform vec2  uTan;      // tan(half fov) horizontal, vertical (screen space)
+  uniform mat2  uScr;      // maps screen axes to device axes for the current screen rotation
   uniform vec2  uUvScale;  // cover-fit for the video
   uniform float uMode;     // 0 blended, 1 pattern only
   uniform float uStrength;
@@ -85,7 +88,8 @@
   void main(){
     // Direction of this pixel's line of sight in world space
     vec2 ndc = vUv*2.-1.;
-    vec3 dev = vec3(ndc.x*uTan.x, ndc.y*uTan.y, -1.);
+    vec2 sc = vec2(ndc.x*uTan.x, ndc.y*uTan.y);
+    vec3 dev = vec3(uScr * sc, -1.);
     vec3 ray = normalize(uR * dev);
 
     // Angle between line of sight and the field axis (an axis, not an arrow: sign doesn't matter)
@@ -117,7 +121,7 @@
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
   const U = n => gl.getUniformLocation(prog, n);
-  const u = { video:U('uVideo'), R:U('uR'), axis:U('uAxis'), tan:U('uTan'), scale:U('uUvScale'),
+  const u = { video:U('uVideo'), R:U('uR'), axis:U('uAxis'), tan:U('uTan'), scr:U('uScr'), scale:U('uUvScale'),
               mode:U('uMode'), strength:U('uStrength'), sharp:U('uSharp') };
   const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
@@ -246,7 +250,19 @@
     const axis = [0, Math.cos(inc), -Math.sin(inc)];
 
     const cw = canvas.width, ch = canvas.height;
-    const tanV = Math.tan(+ctl.fov.value * D2R / 2), tanH = tanV * (cw/ch);
+    // FOV slider applies to the long side of the screen (portrait: vertical, landscape: horizontal)
+    const tanLong = Math.tan(+ctl.fov.value * D2R / 2);
+    const tanH = cw >= ch ? tanLong : tanLong * (cw/ch);
+    const tanV = cw >= ch ? tanLong * (ch/cw) : tanLong;
+
+    // Screen rotation: 0 portrait, 90 landscape (top to the left), 270 landscape (top to the right)
+    let ang = (screen.orientation && screen.orientation.angle != null) ? screen.orientation.angle : (window.orientation || 0);
+    ang = ((Math.round(ang/90)*90 % 360) + 360) % 360;
+    // column-major mat2: columns = device (x,y) response to screen x and screen y
+    const scr = ang === 90  ? [0,-1, 1,0]
+              : ang === 270 ? [0, 1,-1,0]
+              : ang === 180 ? [-1,0, 0,-1]
+              :               [1, 0, 0, 1];
 
     if (video.readyState >= 2) {
       gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -258,6 +274,7 @@
     gl.uniformMatrix3fv(u.R, false, R);
     gl.uniform3f(u.axis, axis[0], axis[1], axis[2]);
     gl.uniform2f(u.tan, tanH, tanV);
+    gl.uniformMatrix2fv(u.scr, false, new Float32Array(scr));
     gl.uniform1f(u.mode, mode);
     gl.uniform1f(u.strength, +ctl.strength.value);
     gl.uniform1f(u.sharp, +ctl.sharp.value);
@@ -274,6 +291,7 @@
     try {
       await enableMotion().catch(e => { console.warn(e); });   // fall back to drag if sensors unavailable
       await enableCamera();
+      try { await screen.orientation.lock('landscape'); } catch (_) { /* not supported on iOS / outside fullscreen */ }
       $('start').hidden = true; $('hud').hidden = false; $('panel').hidden = false;
       frame();
     } catch (e) {
