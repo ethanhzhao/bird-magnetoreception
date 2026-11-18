@@ -26,7 +26,11 @@
     background:var(--bg); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); border-radius:18px; padding:12px 16px;
     max-width:560px; margin:0 auto; max-height:70vh; overflow:auto; }
   #panel.collapsed .rows { display:none; }
-  #panel .top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  #panel .top { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  #note { position:fixed; top:calc(max(14px, env(safe-area-inset-top)) + 44px); left:50%; transform:translateX(-50%);
+    max-width:min(90vw, 420px); text-align:center; z-index:5; pointer-events:none;
+    background:var(--bg); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    padding:8px 16px; border-radius:14px; }
   #panel .top button { padding:6px 14px; }
   .rows { margin-top:10px; display:grid; gap:8px; }
   .row { display:grid; grid-template-columns:96px 1fr 44px; align-items:center; gap:8px; }
@@ -48,10 +52,12 @@
 </div>
 
 <div id="hud" hidden><span id="readout">N 0°</span></div>
+<div id="note" hidden>Red light only — no blue/green light, so the magnetic compass can't work.</div>
 
 <div id="panel" class="collapsed" hidden>
   <div class="top">
     <button id="mode">View: blended</button>
+    <button id="light">Light: white</button>
     <button id="toggle">Settings</button>
   </div>
   <div class="rows">
@@ -84,6 +90,8 @@
   uniform float uMode;     // 0 blended, 1 pattern only
   uniform float uStrength;
   uniform float uSharp;
+  uniform vec3  uLight;    // color of the ambient light the "bird" is seeing by
+  uniform float uGate;     // 0..1: how much blue/green light is available to the magnetic sense
 
   void main(){
     // Direction of this pixel's line of sight in world space
@@ -102,12 +110,15 @@
 
     vec3 col;
     if (uMode > .5) {
-      col = vec3(pat * uStrength + (1.-uStrength)*.5);           // grayscale-only pathway
+      float st = uStrength * uGate;
+      col = vec3(pat * st + (1.-st)*.5) * mix(vec3(1.), uLight, .6);           // grayscale-only pathway
     } else {
       // Strength only scales how dark the dark zones get. The bright band shows the
       // camera image at its original brightness (factor 1.0), never brighter.
-      float k = clamp(1. - uStrength * (1. - pat), 0., 1.);
-      col = cam * k;
+      // The magnetic sense needs blue/green light: with none, the darkening fades away (uGate -> 0).
+      vec3 lit = cam * uLight;                                    // the scene as seen under this light
+      float k = clamp(1. - uStrength * uGate * (1. - pat), 0., 1.);
+      col = lit * k;
     }
     gl_FragColor = vec4(col, 1.);
   }`;
@@ -121,7 +132,8 @@
   const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
   const U = n => gl.getUniformLocation(prog, n);
   const u = { video:U('uVideo'), R:U('uR'), axis:U('uAxis'), tan:U('uTan'), scr:U('uScr'), scale:U('uUvScale'),
-              mode:U('uMode'), strength:U('uStrength'), sharp:U('uSharp') };
+              mode:U('uMode'), strength:U('uStrength'), sharp:U('uSharp'),
+              light:U('uLight'), gate:U('uGate') };
   const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -229,6 +241,18 @@
   $('mode').onclick = () => { mode = 1 - mode; $('mode').textContent = 'View: ' + (mode ? 'pattern only' : 'blended'); };
   $('toggle').onclick = () => $('panel').classList.toggle('collapsed');
 
+  // Light condition: the magnetic compass needs short-wavelength (blue/green) light
+  const LIGHTS = [
+    { name:'white',      rgb:[1.0, 1.0,  1.0 ] },
+    { name:'blue-green', rgb:[0.0, 0.85, 1.0 ] },
+    { name:'red',        rgb:[1.0, 0.04, 0.04] } ];
+  let lightIdx = 0, lightCur = [1,1,1];
+  const gateOf = c => Math.max(0, Math.min(1, ((c[1]+c[2])/2 - 0.05) / 0.45));   // only green + blue count
+  $('light').onclick = () => {
+    lightIdx = (lightIdx + 1) % LIGHTS.length;
+    $('light').textContent = 'Light: ' + LIGHTS[lightIdx].name;
+  };
+
   /* ---------- Camera ---------- */
   async function enableCamera(){
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -277,6 +301,12 @@
     gl.uniform1f(u.mode, mode);
     gl.uniform1f(u.strength, +ctl.strength.value);
     gl.uniform1f(u.sharp, +ctl.sharp.value);
+    // Glide toward the chosen light so switching colors fades rather than snaps
+    lightCur = lightCur.map((v,i) => v + (LIGHTS[lightIdx].rgb[i] - v) * 0.08);
+    const gate = gateOf(lightCur);
+    gl.uniform3f(u.light, lightCur[0], lightCur[1], lightCur[2]);
+    gl.uniform1f(u.gate, gate);
+    $('note').hidden = !(lightIdx === 2 && gate < 0.5);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     const { az, el } = azElOf(current);
