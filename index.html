@@ -104,11 +104,10 @@
     if (uMode > .5) {
       col = vec3(pat * uStrength + (1.-uStrength)*.5);           // grayscale-only pathway
     } else {
-      float k = .14 + 1.5*pat;                                    // darker where the field axis is in view
-      float lum = dot(cam, vec3(.299,.587,.114));
-      vec3 base = mix(cam, vec3(lum), .3);                        // slightly desaturate so the pattern reads
-      vec3 filtered = base * k + vec3(pat*pat*pat*.2);            // soft glow in the bright band
-      col = clamp(mix(cam, filtered, uStrength), 0., 1.);
+      // Strength only scales how dark the dark zones get. The bright band shows the
+      // camera image at its original brightness (factor 1.0), never brighter.
+      float k = clamp(1. - uStrength * (1. - pat), 0., 1.);
+      col = cam * k;
     }
     gl_FragColor = vec4(col, 1.);
   }`;
