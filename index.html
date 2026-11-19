@@ -177,14 +177,10 @@
   let target = qFromEuler(0, 90, 0);   // facing north, upright
   let current = target.slice();
   let haveSensor = false;
-  let yawOffset = 0, haveOffset = false;       // iOS: relative alpha -> compass-referenced alpha
-  let compassSource = 'none';                  // 'portrait' (trusted) or 'landscape guess' (tentative)
+  let hasCompass = false;
+  let yawOffset = 0, haveOffset = false;       // iOS/iPadOS: relative alpha -> compass-referenced alpha
   let manualFix = 0;                           // user-chosen 0/90/180/270 correction, in degrees
-  function screenAngle(){
-    const a = (screen.orientation && screen.orientation.angle != null) ? screen.orientation.angle : (window.orientation || 0);
-    return ((Math.round(a/90)*90 % 360) + 360) % 360;
-  }
-  let drag = { yaw:0, pitch:0 };               // desktop fallback
+  let drag = { yaw:0, pitch:0 };               // fallback when no sensor is present
 
   function azElOf(q){
     const m = qToMat3(q);                      // forward = -(device z axis)
@@ -192,14 +188,13 @@
     return { az: (Math.atan2(fx, fy)/D2R + 360) % 360, el: Math.asin(Math.max(-1, Math.min(1, fz)))/D2R };
   }
 
-  // iOS's webkitCompassHeading follows the phone's TOP edge when that edge is roughly horizontal
-  // (so it's 90 degrees off from the camera direction in landscape), and the back-camera direction
-  // when the phone is upright in portrait (top edge pointing at the sky). Mirror that rule here.
+  // iOS/iPadOS webkitCompassHeading tracks the device's TOP edge when roughly horizontal,
+  // and the back-camera direction when upright with the top edge pointing up.
   function compassRef(q){
     const m = qToMat3(q);
-    const yh = Math.hypot(m[3], m[4]);                 // horizontal part of the device's top-edge axis
+    const yh = Math.hypot(m[3], m[4]);                 // horizontal part of device top-edge axis
     if (yh > 0.4) return { az: (Math.atan2(m[3], m[4])/D2R + 360) % 360, ok: true };
-    const fh = Math.hypot(m[6], m[7]);                 // horizontal part of the camera direction
+    const fh = Math.hypot(m[6], m[7]);                 // horizontal part of camera direction
     return { az: (Math.atan2(-m[6], -m[7])/D2R + 360) % 360, ok: fh > 0.55 };
   }
 
@@ -207,39 +202,47 @@
     if (e.alpha == null || e.beta == null || e.gamma == null) return;
     haveSensor = true;
     let alpha = e.alpha;
-    if (typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading) && !(e.webkitCompassAccuracy < 0)) {
-      // iOS: alpha is relative to an arbitrary start. Calibrate it against the compass.
+
+    const heading = (typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading) && e.webkitCompassHeading >= 0)
+      ? e.webkitCompassHeading
+      : null;
+
+    if (heading !== null && !(typeof e.webkitCompassAccuracy === 'number' && e.webkitCompassAccuracy < 0)) {
+      hasCompass = true;
       const rel = compassRef(qFromEuler(alpha, e.beta, e.gamma));
-      const portrait = screenAngle() % 180 === 0;
-      if (rel.ok && (portrait || compassSource !== 'portrait')) {            // azimuth is unstable when looking steeply up/down
-        const want = (rel.az - e.webkitCompassHeading + 360) % 360;   // c such that alpha_abs = alpha + c
-        const snap = !haveOffset || (portrait && compassSource !== 'portrait');
-        compassSource = portrait ? 'portrait' : 'landscape guess';
-        if (snap) { yawOffset = want; haveOffset = true; }
-        else { let d = ((want - yawOffset + 540) % 360) - 180; yawOffset = (yawOffset + d*0.1 + 360) % 360; }
+      if (rel.ok) {
+        const want = (rel.az - heading + 360) % 360;
+        if (!haveOffset) {
+          yawOffset = want;
+          haveOffset = true;
+        } else {
+          let d = ((want - yawOffset + 540) % 360) - 180;
+          yawOffset = (yawOffset + d * 0.15 + 360) % 360;
+        }
       }
       alpha = alpha + yawOffset;
+    } else {
+      hasCompass = false;
     }
+
     alpha -= manualFix;                        // positive fix turns the displayed heading clockwise
     target = qFromEuler(alpha, e.beta, e.gamma);
   }
 
   async function enableMotion(){
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-      const r = await DeviceOrientationEvent.requestPermission();      // iOS: must be inside a tap handler
+      const r = await DeviceOrientationEvent.requestPermission();
       if (r !== 'granted') throw new Error('Motion permission denied');
       addEventListener('deviceorientation', onOrientation, true);
     } else {
-      // Android Chrome: absolute orientation (referenced to magnetic north)
       if ('ondeviceorientationabsolute' in window) {
         addEventListener('deviceorientationabsolute', onOrientation, true);
-        // If the absolute event never fires, fall back to the regular one
         setTimeout(() => { if (!haveSensor) addEventListener('deviceorientation', onOrientation, true); }, 1500);
       } else addEventListener('deviceorientation', onOrientation, true);
     }
   }
 
-  // Desktop / no-sensor fallback: drag to look around
+  // Fallback when no motion sensor is available: drag to look around
   let dragging = false, lx = 0, ly = 0;
   canvas.addEventListener('pointerdown', e => { dragging = true; lx = e.clientX; ly = e.clientY; });
   addEventListener('pointerup', () => dragging = false);
@@ -273,7 +276,7 @@
     { name:'blue-green', rgb:[0.0, 0.85, 1.0 ] },
     { name:'red',        rgb:[1.0, 0.04, 0.04] } ];
   let lightIdx = 0, lightCur = [1,1,1];
-  const gateOf = c => Math.max(0, Math.min(1, ((c[1]+c[2])/2 - 0.05) / 0.45));   // only green + blue count
+  const gateOf = c => Math.max(0, Math.min(1, ((c[1]+c[2])/2 - 0.05) / 0.45));
   $('light').onclick = () => {
     lightIdx = (lightIdx + 1) % LIGHTS.length;
     $('light').textContent = 'Light: ' + LIGHTS[lightIdx].name;
@@ -290,7 +293,6 @@
   const names = ['N','NE','E','SE','S','SW','W','NW'];
   function frame(){
     requestAnimationFrame(frame);
-    // Smooth toward the sensor orientation so direction changes glide
     current = qSlerp(current, target, +ctl.smooth.value);
     const R = qToMat3(current);
 
@@ -299,15 +301,12 @@
     const axis = [0, Math.cos(inc), -Math.sin(inc)];
 
     const cw = canvas.width, ch = canvas.height;
-    // FOV slider applies to the long side of the screen (portrait: vertical, landscape: horizontal)
     const tanLong = Math.tan(+ctl.fov.value * D2R / 2);
     const tanH = cw >= ch ? tanLong : tanLong * (cw/ch);
     const tanV = cw >= ch ? tanLong * (ch/cw) : tanLong;
 
-    // Screen rotation: 0 portrait, 90 landscape (top to the left), 270 landscape (top to the right)
     let ang = (screen.orientation && screen.orientation.angle != null) ? screen.orientation.angle : (window.orientation || 0);
     ang = ((Math.round(ang/90)*90 % 360) + 360) % 360;
-    // column-major mat2: columns = device (x,y) response to screen x and screen y
     const scr = ang === 90  ? [0,-1, 1,0]
               : ang === 270 ? [0, 1,-1,0]
               : ang === 180 ? [-1,0, 0,-1]
@@ -327,7 +326,6 @@
     gl.uniform1f(u.mode, mode);
     gl.uniform1f(u.strength, +ctl.strength.value);
     gl.uniform1f(u.sharp, +ctl.sharp.value);
-    // Glide toward the chosen light so switching colors fades rather than snaps
     lightCur = lightCur.map((v,i) => v + (LIGHTS[lightIdx].rgb[i] - v) * 0.08);
     const gate = gateOf(lightCur);
     gl.uniform3f(u.light, lightCur[0], lightCur[1], lightCur[2]);
@@ -336,18 +334,20 @@
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     const { az, el } = azElOf(current);
-    $('readout').textContent = `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°  ·  ` +
-      (haveSensor ? 'sensor live' : 'NO SENSOR (drag to look)') +
-      (compassSource === 'landscape guess' ? ' · compass tentative' : '');
+    const status = !haveSensor
+      ? 'NO SENSOR (drag to look)'
+      : (hasCompass ? 'compass live' : 'relative alpha only (no compass)');
+    $('readout').textContent =
+      `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°  ·  ${status}`;
   }
 
   /* ---------- Start ---------- */
   $('go').onclick = async () => {
     $('err').textContent = '';
     try {
-      await enableMotion().catch(e => { console.warn(e); });   // fall back to drag if sensors unavailable
+      await enableMotion().catch(e => { console.warn(e); });
       await enableCamera();
-      try { await screen.orientation.lock('landscape'); } catch (_) { /* not supported on iOS / outside fullscreen */ }
+      try { await screen.orientation.lock('landscape'); } catch (_) {}
       $('start').hidden = true; $('hud').hidden = false; $('panel').hidden = false;
       frame();
     } catch (e) {
