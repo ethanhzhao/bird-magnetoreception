@@ -302,19 +302,11 @@
     const tanH = cw >= ch ? tanLong : tanLong * (cw/ch);
     const tanV = cw >= ch ? tanLong * (ch/cw) : tanLong;
 
-    // Detect if device is iOS/iPadOS (which auto-rotates sensor data to viewport) vs Android (hardware-fixed)
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.userAgent.includes("Mac") && "ontouchend" in document);
+    // Fix for iPad Desktop mode: rely on physical window dimensions rather than the masked orientation API
+    const isLandscape = cw > ch;
     
-    let ang = (screen.orientation && screen.orientation.angle != null) ? screen.orientation.angle : (window.orientation || 0);
-    ang = ((Math.round(ang/90)*90 % 360) + 360) % 360;
-    
-    // Apply identity matrix for Apple devices so we don't swap X/Y twice. Standard W3C mapping used for Android.
-    const scr = isIOS 
-      ? [1, 0, 0, 1] 
-      : (ang === 90  ? [0,-1, 1, 0]
-       : ang === 270 ? [0, 1,-1, 0]
-       : ang === 180 ? [-1,0, 0,-1]
-       :               [1, 0, 0, 1]);
+    // Explicitly swap X and Y axes when the screen is physically wider than it is tall
+    const scr = isLandscape ? [0, 1, -1, 0] : [1, 0, 0, 1];
 
     if (video.readyState >= 2) {
       gl.bindTexture(gl.TEXTURE_2D, tex);
