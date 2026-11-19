@@ -62,11 +62,10 @@
     <button id="toggle">Settings</button>
   </div>
   <div class="rows">
-    <label class="row">Strength  <input id="strength" type="range" min="0" max="1.5" step="0.01" value="1.5"><output></output></label>
-    <label class="row">Sharpness <input id="sharp"    type="range" min="0.5" max="14" step="0.1" value="5"><output></output></label>
-    <label class="row">Inclination<input id="incl"     type="range" min="0" max="90" step="1" value="67"><output></output></label>
-    <label class="row">Smoothing <input id="smooth"   type="range" min="0.03" max="0.5" step="0.01" value="0.15"><output></output></label>
-    <label class="row">Cam FOV    <input id="fov"      type="range" min="40" max="90" step="1" value="62"><output></output></label>
+    <label class="row">Strength   <input id="strength" type="range" min="0" max="1.5" step="0.01" value="1.5"><output></output></label>
+    <label class="row">Sharpness  <input id="sharp"    type="range" min="0.5" max="14" step="0.1" value="5"><output></output></label>
+    <label class="row">Inclination<input id="incl"     type="range" min="0" max="90" step="1" value="60"><output></output></label>
+    <label class="row">Camera FOV <input id="fov"      type="range" min="40" max="90" step="1" value="90"><output></output></label>
   </div>
 </div>
 
@@ -252,8 +251,8 @@
   });
 
   /* ---------- Controls ---------- */
-  const ctl = { strength:$('strength'), sharp:$('sharp'), incl:$('incl'), smooth:$('smooth'), fov:$('fov') };
-  const fmt = { strength:v=>(+v).toFixed(2), sharp:v=>(+v).toFixed(1), incl:v=>v+'°', smooth:v=>(+v).toFixed(2), fov:v=>v+'°' };
+  const ctl = { strength:$('strength'), sharp:$('sharp'), incl:$('incl'), fov:$('fov') };
+  const fmt = { strength:v=>(+v).toFixed(2), sharp:v=>(+v).toFixed(1), incl:v=>v+'°', fov:v=>v+'°' };
   Object.entries(ctl).forEach(([k, el]) => {
     const out = el.parentElement.querySelector('output');
     const upd = () => out.textContent = fmt[k](el.value);
@@ -291,7 +290,9 @@
   function frame(){
     requestAnimationFrame(frame);
     const calibratedTarget = applyNorthCalibration(rawTarget);
-    current = qSlerp(current, calibratedTarget, +ctl.smooth.value);
+    
+    // Smoothing is now hardcoded to 0.15 instead of referencing the removed slider
+    current = qSlerp(current, calibratedTarget, 0.15);
     const R = qToMat3(current);
 
     const inc = +ctl.incl.value * D2R;
