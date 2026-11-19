@@ -155,7 +155,6 @@
     a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
     a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];
   const qAxis = (ax, ang) => { const s = Math.sin(ang/2); return [ax[0]*s, ax[1]*s, ax[2]*s, Math.cos(ang/2)]; };
-  // ENU world (x=East, y=North, z=Up): yawCw is clockwise azimuth from North (0=N, 90=E)
   const qFromHeadingPitchRoll = (yawCw, beta, gamma) =>
     qmul(qmul(qAxis([0,0,1], -yawCw*D2R), qAxis([1,0,0], beta*D2R)), qAxis([0,1,0], gamma*D2R));
   const qSlerp = (a,b,t) => {
@@ -175,19 +174,18 @@
   let current = rawTarget.slice();
   let haveSensor = false;
   let hasCompass = false;
-  let compassOffset = 0, haveOffset = false; // clockwise offset added to heading/alpha to match true azimuth
-  let northOffset = 0;                       // clockwise offset set by "Calibrate North" so current az -> 0°
+  let compassOffset = 0, haveOffset = false;
+  let northOffset = 0;
   let drag = { yaw:0, pitch:0 };
 
   function azElOf(q){
-    const m = qToMat3(q);                      // forward = -(device z axis)
+    const m = qToMat3(q);
     const fx = -m[6], fy = -m[7], fz = -m[8];
     return { az: (Math.atan2(fx, fy)/D2R + 360) % 360, el: Math.asin(Math.max(-1, Math.min(1, fz)))/D2R };
   }
 
   function applyNorthCalibration(q){
     if (!northOffset) return q;
-    // Rotate world counter-clockwise around +Z by northOffset so a direction at +northOffset becomes North (0°)
     return qmul(qAxis([0, 0, 1], northOffset * D2R), q);
   }
 
@@ -282,6 +280,7 @@
     $('light').textContent = 'Light: ' + LIGHTS[lightIdx].name;
   };
 
+  /* ---------- Camera ---------- */
   async function enableCamera(){
     const stream = await navigator.mediaDevices.getUserMedia({
       video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1280 }, height:{ ideal:720 } }, audio:false });
@@ -296,7 +295,6 @@
     const R = qToMat3(current);
 
     const inc = +ctl.incl.value * D2R;
-    // Magnetic field axis in ENU (x=East, y=North, z=Up), inclined downward toward North
     const axis = [0, Math.cos(inc), -Math.sin(inc)];
 
     const cw = canvas.width, ch = canvas.height;
@@ -306,8 +304,9 @@
 
     let ang = (screen.orientation && screen.orientation.angle != null) ? screen.orientation.angle : (window.orientation || 0);
     ang = ((Math.round(ang/90)*90 % 360) + 360) % 360;
-    const scr = ang === 90  ? [0,-1, 1,0]
-              : ang === 270 ? [0, 1,-1,0]
+    // column-major mat2: columns = device (x,y) for screen +X (right) and screen +Y (up)
+    const scr = ang === 90  ? [0, 1,-1, 0]
+              : ang === 270 ? [0,-1, 1, 0]
               : ang === 180 ? [-1,0, 0,-1]
               :               [1, 0, 0, 1];
 
