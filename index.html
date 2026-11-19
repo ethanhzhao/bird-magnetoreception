@@ -58,15 +58,15 @@
   <div class="top">
     <button id="mode">View: blended</button>
     <button id="light">Light: white</button>
+    <button id="fix">Compass fix: 0°</button>
     <button id="toggle">Settings</button>
   </div>
   <div class="rows">
-    <label class="row">Strength  <input id="strength" type="range" min="0" max="1.5" step="0.01" value="0.75"><output></output></label>
+    <label class="row">Strength  <input id="strength" type="range" min="0" max="1.5" step="0.01" value="1.5"><output></output></label>
     <label class="row">Sharpness <input id="sharp"    type="range" min="0.5" max="14" step="0.1" value="5"><output></output></label>
     <label class="row">Inclination<input id="incl"     type="range" min="0" max="90" step="1" value="67"><output></output></label>
     <label class="row">Smoothing <input id="smooth"   type="range" min="0.03" max="0.5" step="0.01" value="0.15"><output></output></label>
     <label class="row">Cam FOV    <input id="fov"      type="range" min="40" max="90" step="1" value="62"><output></output></label>
-    <label class="row">Heading trim<input id="trim"    type="range" min="-180" max="180" step="1" value="0"><output></output></label>
   </div>
 </div>
 
@@ -178,6 +178,12 @@
   let current = target.slice();
   let haveSensor = false;
   let yawOffset = 0, haveOffset = false;       // iOS: relative alpha -> compass-referenced alpha
+  let compassSource = 'none';                  // 'portrait' (trusted) or 'landscape guess' (tentative)
+  let manualFix = 0;                           // user-chosen 0/90/180/270 correction, in degrees
+  function screenAngle(){
+    const a = (screen.orientation && screen.orientation.angle != null) ? screen.orientation.angle : (window.orientation || 0);
+    return ((Math.round(a/90)*90 % 360) + 360) % 360;
+  }
   let drag = { yaw:0, pitch:0 };               // desktop fallback
 
   function azElOf(q){
@@ -201,17 +207,20 @@
     if (e.alpha == null || e.beta == null || e.gamma == null) return;
     haveSensor = true;
     let alpha = e.alpha;
-    if (typeof e.webkitCompassHeading === 'number') {
+    if (typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading) && !(e.webkitCompassAccuracy < 0)) {
       // iOS: alpha is relative to an arbitrary start. Calibrate it against the compass.
       const rel = compassRef(qFromEuler(alpha, e.beta, e.gamma));
-      if (rel.ok) {            // azimuth is unstable when looking steeply up/down
+      const portrait = screenAngle() % 180 === 0;
+      if (rel.ok && (portrait || compassSource !== 'portrait')) {            // azimuth is unstable when looking steeply up/down
         const want = (rel.az - e.webkitCompassHeading + 360) % 360;   // c such that alpha_abs = alpha + c
-        if (!haveOffset) { yawOffset = want; haveOffset = true; }
+        const snap = !haveOffset || (portrait && compassSource !== 'portrait');
+        compassSource = portrait ? 'portrait' : 'landscape guess';
+        if (snap) { yawOffset = want; haveOffset = true; }
         else { let d = ((want - yawOffset + 540) % 360) - 180; yawOffset = (yawOffset + d*0.1 + 360) % 360; }
       }
       alpha = alpha + yawOffset;
     }
-    alpha -= +ctl.trim.value;                 // manual heading trim (positive = turn displayed heading clockwise)
+    alpha -= manualFix;                        // positive fix turns the displayed heading clockwise
     target = qFromEuler(alpha, e.beta, e.gamma);
   }
 
@@ -243,8 +252,8 @@
   });
 
   /* ---------- Controls ---------- */
-  const ctl = { strength:$('strength'), sharp:$('sharp'), incl:$('incl'), smooth:$('smooth'), fov:$('fov'), trim:$('trim') };
-  const fmt = { strength:v=>(+v).toFixed(2), sharp:v=>(+v).toFixed(1), incl:v=>v+'°', smooth:v=>(+v).toFixed(2), fov:v=>v+'°', trim:v=>v+'°' };
+  const ctl = { strength:$('strength'), sharp:$('sharp'), incl:$('incl'), smooth:$('smooth'), fov:$('fov') };
+  const fmt = { strength:v=>(+v).toFixed(2), sharp:v=>(+v).toFixed(1), incl:v=>v+'°', smooth:v=>(+v).toFixed(2), fov:v=>v+'°' };
   Object.entries(ctl).forEach(([k, el]) => {
     const out = el.parentElement.querySelector('output');
     const upd = () => out.textContent = fmt[k](el.value);
@@ -253,6 +262,10 @@
   let mode = 0;
   $('mode').onclick = () => { mode = 1 - mode; $('mode').textContent = 'View: ' + (mode ? 'pattern only' : 'blended'); };
   $('toggle').onclick = () => $('panel').classList.toggle('collapsed');
+  $('fix').onclick = () => {
+    manualFix = (manualFix + 90) % 360;
+    $('fix').textContent = 'Compass fix: ' + manualFix + '°';
+  };
 
   // Light condition: the magnetic compass needs short-wavelength (blue/green) light
   const LIGHTS = [
@@ -324,7 +337,8 @@
 
     const { az, el } = azElOf(current);
     $('readout').textContent = `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°  ·  ` +
-      (haveSensor ? 'sensor live' : 'NO SENSOR (drag to look)');
+      (haveSensor ? 'sensor live' : 'NO SENSOR (drag to look)') +
+      (compassSource === 'landscape guess' ? ' · compass tentative' : '');
   }
 
   /* ---------- Start ---------- */
