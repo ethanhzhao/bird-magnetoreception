@@ -58,7 +58,7 @@
   <div class="top">
     <button id="mode">View: blended</button>
     <button id="light">Light: white</button>
-    <button id="fix">Compass fix: 0°</button>
+    <button id="fix">Calibrate North</button>
     <button id="toggle">Settings</button>
   </div>
   <div class="rows">
@@ -174,18 +174,24 @@
     2*(x*z+y*w),   2*(y*z-x*w),   1-2*(x*x+y*y)]);
 
   /* ---------- Orientation sources ---------- */
-  let target = qFromEuler(0, 90, 0);   // facing north, upright
-  let current = target.slice();
+  let rawTarget = qFromEuler(0, 90, 0);  // uncalibrated orientation: facing north, upright
+  let current = rawTarget.slice();
   let haveSensor = false;
   let hasCompass = false;
   let yawOffset = 0, haveOffset = false;       // iOS/iPadOS: relative alpha -> compass-referenced alpha
-  let manualFix = 0;                           // user-chosen 0/90/180/270 correction, in degrees
+  let manualFix = 0;                           // clockwise world-yaw shift (deg) so current view = North
   let drag = { yaw:0, pitch:0 };               // fallback when no sensor is present
 
   function azElOf(q){
     const m = qToMat3(q);                      // forward = -(device z axis)
     const fx = -m[6], fy = -m[7], fz = -m[8];
     return { az: (Math.atan2(fx, fy)/D2R + 360) % 360, el: Math.asin(Math.max(-1, Math.min(1, fz)))/D2R };
+  }
+
+  function applyManualFix(q){
+    if (!manualFix) return q;
+    // Clockwise azimuth increase rotates world vectors toward +X (East), i.e., -Z rotation in ENU
+    return qmul(qAxis([0, 0, 1], -manualFix * D2R), q);
   }
 
   // iOS/iPadOS webkitCompassHeading tracks the device's TOP edge when roughly horizontal,
@@ -225,8 +231,7 @@
       hasCompass = false;
     }
 
-    alpha -= manualFix;                        // positive fix turns the displayed heading clockwise
-    target = qFromEuler(alpha, e.beta, e.gamma);
+    rawTarget = qFromEuler(alpha, e.beta, e.gamma);
   }
 
   async function enableMotion(){
@@ -251,7 +256,7 @@
     drag.yaw = (drag.yaw + (e.clientX-lx)*0.3 + 360) % 360;
     drag.pitch = Math.max(-85, Math.min(85, drag.pitch - (e.clientY-ly)*0.3));
     lx = e.clientX; ly = e.clientY;
-    target = qFromEuler(-drag.yaw, 90 + drag.pitch, 0);
+    rawTarget = qFromEuler(-drag.yaw, 90 + drag.pitch, 0);
   });
 
   /* ---------- Controls ---------- */
@@ -266,8 +271,10 @@
   $('mode').onclick = () => { mode = 1 - mode; $('mode').textContent = 'View: ' + (mode ? 'pattern only' : 'blended'); };
   $('toggle').onclick = () => $('panel').classList.toggle('collapsed');
   $('fix').onclick = () => {
-    manualFix = (manualFix + 90) % 360;
-    $('fix').textContent = 'Compass fix: ' + manualFix + '°';
+    const { az } = azElOf(rawTarget);
+    manualFix = az;
+    current = applyManualFix(rawTarget).slice();
+    $('fix').textContent = 'North set (' + Math.round(manualFix) + '°)';
   };
 
   // Light condition: the magnetic compass needs short-wavelength (blue/green) light
@@ -293,7 +300,8 @@
   const names = ['N','NE','E','SE','S','SW','W','NW'];
   function frame(){
     requestAnimationFrame(frame);
-    current = qSlerp(current, target, +ctl.smooth.value);
+    const calibratedTarget = applyManualFix(rawTarget);
+    current = qSlerp(current, calibratedTarget, +ctl.smooth.value);
     const R = qToMat3(current);
 
     const inc = +ctl.incl.value * D2R;
