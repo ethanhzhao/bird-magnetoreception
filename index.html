@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -47,7 +48,7 @@
   <h1>Experience Bird Magnetoreception</h1>
   <p>See the world with a simulated magnetic compass sense. The pattern you see depends on the direction you face — and where you tilt your device.</p>
   <p>Best held sideways (landscape). Turn off rotation lock first.</p>
-  <button id="go">Enable camera &amp; motion</button>
+  <button id="go">Enable camera & motion</button>
   <p id="err"></p>
 </div>
 
@@ -305,8 +306,8 @@
     let ang = (screen.orientation && screen.orientation.angle != null) ? screen.orientation.angle : (window.orientation || 0);
     ang = ((Math.round(ang/90)*90 % 360) + 360) % 360;
     // column-major mat2: columns = device (x,y) for screen +X (right) and screen +Y (up)
-    const scr = ang === 90  ? [0, 1,-1, 0]
-              : ang === 270 ? [0,-1, 1, 0]
+    const scr = ang === 90  ? [0,-1, 1, 0]
+              : ang === 270 ? [0, 1,-1, 0]
               : ang === 180 ? [-1,0, 0,-1]
               :               [1, 0, 0, 1];
 
@@ -355,3 +356,5 @@
 </script>
 </body>
 </html>
+
+```
