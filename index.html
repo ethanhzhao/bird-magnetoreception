@@ -45,8 +45,8 @@
 
 <div id="start">
   <h1>Experience Bird Magnetoreception</h1>
-  <p>See the world with a simulated magnetic compass sense. The pattern you see depends on the direction you face — and where you tilt your phone.</p>
-  <p>Best held sideways (landscape). Turn off your phone's rotation lock first.</p>
+  <p>See the world with a simulated magnetic compass sense. The pattern you see depends on the direction you face — and where you tilt your device.</p>
+  <p>Best held sideways (landscape). Turn off rotation lock first.</p>
   <button id="go">Enable camera &amp; motion</button>
   <p id="err"></p>
 </div>
@@ -112,12 +112,9 @@
     vec3 col;
     if (uMode > .5) {
       float st = uStrength * uGate;
-      col = vec3(pat * st + (1.-st)*.5) * mix(vec3(1.), uLight, .6);           // grayscale-only pathway
+      col = vec3(pat * st + (1.-st)*.5) * mix(vec3(1.), uLight, .6);
     } else {
-      // Strength only scales how dark the dark zones get. The bright band shows the
-      // camera image at its original brightness (factor 1.0), never brighter.
-      // The magnetic sense needs blue/green light: with none, the darkening fades away (uGate -> 0).
-      vec3 lit = cam * uLight;                                    // the scene as seen under this light
+      vec3 lit = cam * uLight;
       float k = clamp(1. - uStrength * uGate * (1. - pat), 0., 1.);
       col = lit * k;
     }
@@ -158,8 +155,9 @@
     a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],
     a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];
   const qAxis = (ax, ang) => { const s = Math.sin(ang/2); return [ax[0]*s, ax[1]*s, ax[2]*s, Math.cos(ang/2)]; };
-  // W3C DeviceOrientation: R = Rz(alpha) * Rx(beta) * Ry(gamma)
-  const qFromEuler = (a,b,g) => qmul(qmul(qAxis([0,0,1], a*D2R), qAxis([1,0,0], b*D2R)), qAxis([0,1,0], g*D2R));
+  // ENU world (x=East, y=North, z=Up): yawCw is clockwise azimuth from North (0=N, 90=E)
+  const qFromHeadingPitchRoll = (yawCw, beta, gamma) =>
+    qmul(qmul(qAxis([0,0,1], -yawCw*D2R), qAxis([1,0,0], beta*D2R)), qAxis([0,1,0], gamma*D2R));
   const qSlerp = (a,b,t) => {
     let d = a[0]*b[0]+a[1]*b[1]+a[2]*b[2]+a[3]*b[3];
     if (d < 0) { b = b.map(v=>-v); d = -d; }
@@ -167,20 +165,19 @@
     const th = Math.acos(d), s = Math.sin(th), w1 = Math.sin((1-t)*th)/s, w2 = Math.sin(t*th)/s;
     return a.map((v,i)=>v*w1+b[i]*w2);
   };
-  // column-major mat3 (columns = rotated x, y, z axes)
   const qToMat3 = ([x,y,z,w]) => new Float32Array([
     1-2*(y*y+z*z), 2*(x*y+z*w),   2*(x*z-y*w),
     2*(x*y-z*w),   1-2*(x*x+z*z), 2*(y*z+x*w),
     2*(x*z+y*w),   2*(y*z-x*w),   1-2*(x*x+y*y)]);
 
   /* ---------- Orientation sources ---------- */
-  let rawTarget = qFromEuler(0, 90, 0);  // uncalibrated orientation: facing north, upright
+  let rawTarget = qFromHeadingPitchRoll(0, 90, 0);
   let current = rawTarget.slice();
   let haveSensor = false;
   let hasCompass = false;
-  let yawOffset = 0, haveOffset = false;       // iOS/iPadOS: relative alpha -> compass-referenced alpha
-  let manualFix = 0;                           // clockwise world-yaw shift (deg) so current view = North
-  let drag = { yaw:0, pitch:0 };               // fallback when no sensor is present
+  let compassOffset = 0, haveOffset = false; // clockwise offset added to heading/alpha to match true azimuth
+  let northOffset = 0;                       // clockwise offset set by "Calibrate North" so current az -> 0°
+  let drag = { yaw:0, pitch:0 };
 
   function azElOf(q){
     const m = qToMat3(q);                      // forward = -(device z axis)
@@ -188,50 +185,48 @@
     return { az: (Math.atan2(fx, fy)/D2R + 360) % 360, el: Math.asin(Math.max(-1, Math.min(1, fz)))/D2R };
   }
 
-  function applyManualFix(q){
-    if (!manualFix) return q;
-    // Clockwise azimuth increase rotates world vectors toward +X (East), i.e., -Z rotation in ENU
-    return qmul(qAxis([0, 0, 1], -manualFix * D2R), q);
+  function applyNorthCalibration(q){
+    if (!northOffset) return q;
+    // Rotate world counter-clockwise around +Z by northOffset so a direction at +northOffset becomes North (0°)
+    return qmul(qAxis([0, 0, 1], northOffset * D2R), q);
   }
 
-  // iOS/iPadOS webkitCompassHeading tracks the device's TOP edge when roughly horizontal,
-  // and the back-camera direction when upright with the top edge pointing up.
   function compassRef(q){
     const m = qToMat3(q);
-    const yh = Math.hypot(m[3], m[4]);                 // horizontal part of device top-edge axis
+    const yh = Math.hypot(m[3], m[4]);
     if (yh > 0.4) return { az: (Math.atan2(m[3], m[4])/D2R + 360) % 360, ok: true };
-    const fh = Math.hypot(m[6], m[7]);                 // horizontal part of camera direction
+    const fh = Math.hypot(m[6], m[7]);
     return { az: (Math.atan2(-m[6], -m[7])/D2R + 360) % 360, ok: fh > 0.55 };
   }
 
   function onOrientation(e){
     if (e.alpha == null || e.beta == null || e.gamma == null) return;
     haveSensor = true;
-    let alpha = e.alpha;
 
     const heading = (typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading) && e.webkitCompassHeading >= 0)
       ? e.webkitCompassHeading
       : null;
 
+    let yawCw = e.alpha;
     if (heading !== null && !(typeof e.webkitCompassAccuracy === 'number' && e.webkitCompassAccuracy < 0)) {
       hasCompass = true;
-      const rel = compassRef(qFromEuler(alpha, e.beta, e.gamma));
+      const rel = compassRef(qFromHeadingPitchRoll(e.alpha, e.beta, e.gamma));
       if (rel.ok) {
-        const want = (rel.az - heading + 360) % 360;
+        const want = (heading - rel.az + 360) % 360;
         if (!haveOffset) {
-          yawOffset = want;
+          compassOffset = want;
           haveOffset = true;
         } else {
-          let d = ((want - yawOffset + 540) % 360) - 180;
-          yawOffset = (yawOffset + d * 0.15 + 360) % 360;
+          let d = ((want - compassOffset + 540) % 360) - 180;
+          compassOffset = (compassOffset + d * 0.15 + 360) % 360;
         }
       }
-      alpha = alpha + yawOffset;
+      yawCw = (e.alpha + compassOffset) % 360;
     } else {
       hasCompass = false;
     }
 
-    rawTarget = qFromEuler(alpha, e.beta, e.gamma);
+    rawTarget = qFromHeadingPitchRoll(yawCw, e.beta, e.gamma);
   }
 
   async function enableMotion(){
@@ -247,7 +242,6 @@
     }
   }
 
-  // Fallback when no motion sensor is available: drag to look around
   let dragging = false, lx = 0, ly = 0;
   canvas.addEventListener('pointerdown', e => { dragging = true; lx = e.clientX; ly = e.clientY; });
   addEventListener('pointerup', () => dragging = false);
@@ -256,7 +250,7 @@
     drag.yaw = (drag.yaw + (e.clientX-lx)*0.3 + 360) % 360;
     drag.pitch = Math.max(-85, Math.min(85, drag.pitch - (e.clientY-ly)*0.3));
     lx = e.clientX; ly = e.clientY;
-    rawTarget = qFromEuler(-drag.yaw, 90 + drag.pitch, 0);
+    rawTarget = qFromHeadingPitchRoll(drag.yaw, 90 + drag.pitch, 0);
   });
 
   /* ---------- Controls ---------- */
@@ -272,12 +266,11 @@
   $('toggle').onclick = () => $('panel').classList.toggle('collapsed');
   $('fix').onclick = () => {
     const { az } = azElOf(rawTarget);
-    manualFix = az;
-    current = applyManualFix(rawTarget).slice();
-    $('fix').textContent = 'North set (' + Math.round(manualFix) + '°)';
+    northOffset = az;
+    current = applyNorthCalibration(rawTarget).slice();
+    $('fix').textContent = 'North set (' + Math.round(northOffset) + '°)';
   };
 
-  // Light condition: the magnetic compass needs short-wavelength (blue/green) light
   const LIGHTS = [
     { name:'white',      rgb:[1.0, 1.0,  1.0 ] },
     { name:'blue-green', rgb:[0.0, 0.85, 1.0 ] },
@@ -289,23 +282,21 @@
     $('light').textContent = 'Light: ' + LIGHTS[lightIdx].name;
   };
 
-  /* ---------- Camera ---------- */
   async function enableCamera(){
     const stream = await navigator.mediaDevices.getUserMedia({
       video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1280 }, height:{ ideal:720 } }, audio:false });
     video.srcObject = stream; await video.play();
   }
 
-  /* ---------- Render loop ---------- */
   const names = ['N','NE','E','SE','S','SW','W','NW'];
   function frame(){
     requestAnimationFrame(frame);
-    const calibratedTarget = applyManualFix(rawTarget);
+    const calibratedTarget = applyNorthCalibration(rawTarget);
     current = qSlerp(current, calibratedTarget, +ctl.smooth.value);
     const R = qToMat3(current);
 
     const inc = +ctl.incl.value * D2R;
-    // Field points north and DOWN in the northern hemisphere (ENU: x east, y north, z up)
+    // Magnetic field axis in ENU (x=East, y=North, z=Up), inclined downward toward North
     const axis = [0, Math.cos(inc), -Math.sin(inc)];
 
     const cw = canvas.width, ch = canvas.height;
@@ -349,7 +340,6 @@
       `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°  ·  ${status}`;
   }
 
-  /* ---------- Start ---------- */
   $('go').onclick = async () => {
     $('err').textContent = '';
     try {
