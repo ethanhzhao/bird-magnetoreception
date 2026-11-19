@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -31,12 +32,14 @@
     max-width:min(90vw, 420px); text-align:center; z-index:5; pointer-events:none;
     background:var(--bg); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
     padding:8px 16px; border-radius:14px; }
-  #panel .top button { padding:6px 14px; }
-  .rows { margin-top:10px; display:grid; gap:8px; }
+  #panel button { padding:6px 14px; }
+  .rows { margin-top:12px; display:grid; gap:10px; }
   .row { display:grid; grid-template-columns:96px 1fr 44px; align-items:center; gap:8px; }
   .row output { text-align:right; opacity:.7; font-variant-numeric:tabular-nums; }
+  .actions { display:flex; justify-content:center; gap:12px; margin-top:8px; flex-wrap:wrap; }
   input[type=range] { width:100%; }
   #err { color:#ffb4a8; max-width:30em; }
+  #debug { text-align:center; font-size:12px; opacity:0.5; margin-top:4px; font-variant-numeric:tabular-nums; }
 </style>
 </head>
 <body>
@@ -56,8 +59,6 @@
 <div id="panel" class="collapsed" hidden>
   <div class="top">
     <button id="mode">View: blended</button>
-    <button id="light">Light: white</button>
-    <button id="fix">Calibrate North</button>
     <button id="toggle">Settings</button>
   </div>
   <div class="rows">
@@ -65,6 +66,11 @@
     <label class="row">Sharpness  <input id="sharp"    type="range" min="0.5" max="14" step="0.1" value="5"><output></output></label>
     <label class="row">Inclination<input id="incl"     type="range" min="0" max="90" step="1" value="60"><output></output></label>
     <label class="row">Camera FOV <input id="fov"      type="range" min="40" max="90" step="1" value="90"><output></output></label>
+    <div class="actions">
+      <button id="light">Light: white</button>
+      <button id="fix">Calibrate North</button>
+    </div>
+    <div id="debug"></div>
   </div>
 </div>
 
@@ -290,7 +296,6 @@
     requestAnimationFrame(frame);
     const calibratedTarget = applyNorthCalibration(rawTarget);
     
-    // Smoothing is now hardcoded to 0.15 instead of referencing the removed slider
     current = qSlerp(current, calibratedTarget, 0.15);
     const R = qToMat3(current);
 
@@ -302,10 +307,7 @@
     const tanH = cw >= ch ? tanLong : tanLong * (cw/ch);
     const tanV = cw >= ch ? tanLong * (ch/cw) : tanLong;
 
-    // Fix for iPad Desktop mode: rely on physical window dimensions rather than the masked orientation API
     const isLandscape = cw > ch;
-    
-    // CORRECTED: Swaps axes to properly align the North/South magnetic fields for your iPad orientation
     const scr = isLandscape ? [0, -1, 1, 0] : [1, 0, 0, 1];
 
     if (video.readyState >= 2) {
@@ -333,8 +335,8 @@
     const status = !haveSensor
       ? 'NO SENSOR (drag to look)'
       : (hasCompass ? 'compass live' : 'relative alpha only (no compass)');
-    $('readout').textContent =
-      `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°  ·  ${status}`;
+    $('readout').textContent = `${names[Math.round(az/45)%8]} ${Math.round(az)}°  ·  tilt ${Math.round(el)}°`;
+    $('debug').textContent = 'Sensor Debug: ' + status;
   }
 
   $('go').onclick = async () => {
@@ -353,3 +355,5 @@
 </script>
 </body>
 </html>
+
+```
