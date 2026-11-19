@@ -66,6 +66,7 @@
     <label class="row">Inclination<input id="incl"     type="range" min="0" max="90" step="1" value="67"><output></output></label>
     <label class="row">Smoothing <input id="smooth"   type="range" min="0.03" max="0.5" step="0.01" value="0.15"><output></output></label>
     <label class="row">Cam FOV    <input id="fov"      type="range" min="40" max="90" step="1" value="62"><output></output></label>
+    <label class="row">Heading trim<input id="trim"    type="range" min="-180" max="180" step="1" value="0"><output></output></label>
   </div>
 </div>
 
@@ -185,20 +186,32 @@
     return { az: (Math.atan2(fx, fy)/D2R + 360) % 360, el: Math.asin(Math.max(-1, Math.min(1, fz)))/D2R };
   }
 
+  // iOS's webkitCompassHeading follows the phone's TOP edge when that edge is roughly horizontal
+  // (so it's 90 degrees off from the camera direction in landscape), and the back-camera direction
+  // when the phone is upright in portrait (top edge pointing at the sky). Mirror that rule here.
+  function compassRef(q){
+    const m = qToMat3(q);
+    const yh = Math.hypot(m[3], m[4]);                 // horizontal part of the device's top-edge axis
+    if (yh > 0.4) return { az: (Math.atan2(m[3], m[4])/D2R + 360) % 360, ok: true };
+    const fh = Math.hypot(m[6], m[7]);                 // horizontal part of the camera direction
+    return { az: (Math.atan2(-m[6], -m[7])/D2R + 360) % 360, ok: fh > 0.55 };
+  }
+
   function onOrientation(e){
     if (e.alpha == null || e.beta == null || e.gamma == null) return;
     haveSensor = true;
     let alpha = e.alpha;
     if (typeof e.webkitCompassHeading === 'number') {
       // iOS: alpha is relative to an arbitrary start. Calibrate it against the compass.
-      const rel = azElOf(qFromEuler(alpha, e.beta, e.gamma));
-      if (Math.abs(rel.el) < 55) {            // azimuth is unstable when looking steeply up/down
+      const rel = compassRef(qFromEuler(alpha, e.beta, e.gamma));
+      if (rel.ok) {            // azimuth is unstable when looking steeply up/down
         const want = (rel.az - e.webkitCompassHeading + 360) % 360;   // c such that alpha_abs = alpha + c
         if (!haveOffset) { yawOffset = want; haveOffset = true; }
         else { let d = ((want - yawOffset + 540) % 360) - 180; yawOffset = (yawOffset + d*0.1 + 360) % 360; }
       }
       alpha = alpha + yawOffset;
     }
+    alpha -= +ctl.trim.value;                 // manual heading trim (positive = turn displayed heading clockwise)
     target = qFromEuler(alpha, e.beta, e.gamma);
   }
 
@@ -230,8 +243,8 @@
   });
 
   /* ---------- Controls ---------- */
-  const ctl = { strength:$('strength'), sharp:$('sharp'), incl:$('incl'), smooth:$('smooth'), fov:$('fov') };
-  const fmt = { strength:v=>(+v).toFixed(2), sharp:v=>(+v).toFixed(1), incl:v=>v+'°', smooth:v=>(+v).toFixed(2), fov:v=>v+'°' };
+  const ctl = { strength:$('strength'), sharp:$('sharp'), incl:$('incl'), smooth:$('smooth'), fov:$('fov'), trim:$('trim') };
+  const fmt = { strength:v=>(+v).toFixed(2), sharp:v=>(+v).toFixed(1), incl:v=>v+'°', smooth:v=>(+v).toFixed(2), fov:v=>v+'°', trim:v=>v+'°' };
   Object.entries(ctl).forEach(([k, el]) => {
     const out = el.parentElement.querySelector('output');
     const upd = () => out.textContent = fmt[k](el.value);
