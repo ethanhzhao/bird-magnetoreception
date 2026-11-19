@@ -305,8 +305,8 @@
     // Fix for iPad Desktop mode: rely on physical window dimensions rather than the masked orientation API
     const isLandscape = cw > ch;
     
-    // Explicitly swap X and Y axes when the screen is physically wider than it is tall
-    const scr = isLandscape ? [0, 1, -1, 0] : [1, 0, 0, 1];
+    // CORRECTED: Swaps axes to properly align the North/South magnetic fields for your iPad orientation
+    const scr = isLandscape ? [0, -1, 1, 0] : [1, 0, 0, 1];
 
     if (video.readyState >= 2) {
       gl.bindTexture(gl.TEXTURE_2D, tex);
